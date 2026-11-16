@@ -109,8 +109,15 @@ namespace EtwToPprof
       if (sample.Stack != null && sample.Stack.Frames.Count != 0)
       {
         int processId = sample.Process.Id;
+        // Frames[0] is the sampled instruction (leaf). Every later frame is a return address,
+        // which points at the instruction *after* the call, so it symbolizes to the next
+        // source statement (and to the wrong inlined-function chain). Unsymbolized caller
+        // frames are therefore emitted as (return address - 1), which lies inside the call
+        // instruction, matching the pprof convention used by other profile converters.
+        int frameIndex = 0;
         foreach (var stackFrame in sample.Stack.Frames)
         {
+          bool isCallerFrame = frameIndex++ > 0;
           if (stackFrame.HasValue && stackFrame.Symbol != null && !string.IsNullOrEmpty(stackFrame.Symbol.FunctionName))
           {
             sampleProto.LocationId.Add(GetLocationId(stackFrame.Symbol, stackFrame.Address));
@@ -129,7 +136,7 @@ namespace EtwToPprof
           else if (stackFrame.HasValue)
           {
             sampleProto.LocationId.Add(
-              GetUnsymbolizedLocationId(stackFrame.Address, stackFrame.Image));
+              GetUnsymbolizedLocationId(stackFrame.Address, stackFrame.Image, isCallerFrame));
           }
         }
         string processName = sample.Process.ImageName;
@@ -328,10 +335,12 @@ namespace EtwToPprof
       return locationId;
     }
 
-    ulong GetUnsymbolizedLocationId(Address address, IImage image)
+    ulong GetUnsymbolizedLocationId(Address address, IImage image, bool isCallerFrame)
     {
-      // Use the raw address as the dedup key for unsymbolized frames.
+      // Use the (adjusted) address as the dedup key for unsymbolized frames.
       ulong addr = unchecked((ulong)address.Value);
+      if (isCallerFrame && addr > 0)
+        addr -= 1;
       if (!unsymbolizedLocations.TryGetValue(addr, out ulong locationId))
       {
         locationId = nextLocationId++;
