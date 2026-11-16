@@ -22,27 +22,35 @@ Build with the .NET 10 SDK:
 
 ## Examples
 
-Export to specified pprof profile using default options:
+Export to specified pprof profile using default options (`chrome.exe,dwm.exe,audiodg.exe`, split by Chrome subprocess type):
 
     EtwToPprof -o profile.pb.gz trace.etl
+
+Export `chrome.exe` samples for a steady-state window (`5s` to `15s`) without loading local PDBs (emits Breakpad `BuildId` mappings for server-side symbolization while still resolving V8 `JS.*` and `WebAssembly.*` ETW frames):
+
+    EtwToPprof --loadSymbols false -p chrome.exe --timeStart 5 --timeEnd 15 -o chrome_nosym.pb.gz trace.etl
 
 Export samples from specified process names:
 
     EtwToPprof -p viz_perftests.exe,dwm.exe trace.etl
 
-Export samples from all processes from 10s to 30s:
+Export samples from all processes from `10s` to `30s`:
 
-    EtwToPprof -p * --timeEnd 30 --timeStart 10 trace.etl
+    EtwToPprof -p * --timeStart 10 --timeEnd 30 trace.etl
 
-Export inlined functions and thread/process ids:
+Export inlined functions and thread/process IDs:
 
     EtwToPprof --includeInlinedFunctions --includeProcessAndThreadIds trace.etl
 
-Merge all chrome.exe processes under a single heading:
+Merge all `chrome.exe` processes under a single heading:
 
     EtwToPprof --noSplitChromeProcesses trace.etl
 
-List all loaded images with their Breakpad build IDs:
+Export raw unmapped JIT addresses without resolving V8 `Microsoft-JScript` ETW events:
+
+    EtwToPprof --resolveJsSymbols false trace.etl
+
+List all loaded images with their Breakpad build IDs and exit:
 
     EtwToPprof --listImageIds trace.etl
 

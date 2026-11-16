@@ -37,12 +37,14 @@ namespace EtwToPprof
           return new List<Example>() {
             new Example("Export to specified pprof profile using default options", new UnParserSettings { PreferShortName = true },
               new Options { etlFileName = "trace.etl", outputFileName = "profile.pb.gz" }),
+            new Example("Export Chrome samples without loading local PDBs (emits Breakpad build IDs + V8 JS/Wasm symbols)", new UnParserSettings { PreferShortName = true },
+              new Options { etlFileName = "trace.etl", outputFileName = "chrome_nosym.pb.gz", processFilter = "chrome.exe", loadSymbols = false }),
             new Example("Export samples from specified process names", new UnParserSettings { PreferShortName = true },
               new Options { etlFileName = "trace.etl", processFilter = "viz_perftests.exe,dwm.exe" }),
             new Example("Export samples from all processes from 10s to 30s", new UnParserSettings { PreferShortName = true },
               new Options { etlFileName = "trace.etl", processFilter = "*", timeStart = 10, timeEnd = 30 }),
             new Example("Export inlined functions and thread/process ids", new UnParserSettings { PreferShortName = true },
-              new Options { etlFileName = "trace.etl", includeInlinedFunctions = true, includeProcessAndThreadIds = true})
+              new Options { etlFileName = "trace.etl", includeInlinedFunctions = true, includeProcessAndThreadIds = true })
           };
         }
       }
