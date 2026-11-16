@@ -97,6 +97,10 @@ namespace EtwToPprof
       [Option("listImageIds", Required = false, Default = false,
               HelpText = "List all unique image (module) names found in the trace and exit.")]
       public bool listImageIds { get; set; }
+
+      [Option("resolveJsSymbols", Required = false, Default = true,
+              HelpText = "Resolve V8/JScript ETW MethodLoad symbols into pprof frames (v5).")]
+      public bool resolveJsSymbols { get; set; }
     }
 
     static void Main(string[] args)
@@ -110,6 +114,12 @@ namespace EtwToPprof
       {
         IPendingResult<ICpuSampleDataSource> pendingCpuSampleData = trace.UseCpuSamplingData();
         IPendingResult<ISymbolDataSource> pendingSymbolData = trace.UseSymbols();
+        JScriptSymbolResolver jsResolver = null;
+        if (opts.resolveJsSymbols)
+        {
+          jsResolver = new JScriptSymbolResolver();
+          jsResolver.Register(trace);
+        }
 
         trace.Process();
 
@@ -198,6 +208,7 @@ namespace EtwToPprof
             opts.processFilter.Trim().Split(",", StringSplitOptions.RemoveEmptyEntries));
         }
 
+        profileOpts.jsResolver = (jsResolver != null && jsResolver.FinalizeIndex()) ? jsResolver : null;
         var profileWriter = new ProfileWriter(profileOpts);
 
         for (int i = 0; i < cpuSampleData.Samples.Count; i++)

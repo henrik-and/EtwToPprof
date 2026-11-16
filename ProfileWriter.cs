@@ -42,6 +42,7 @@ namespace EtwToPprof
       public decimal timeStart { get; set; }
       public decimal timeEnd { get; set; }
       public HashSet<string> processFilterSet { get; set; }
+      public JScriptSymbolResolver jsResolver { get; set; }
     }
 
     public ProfileWriter(Options options)
@@ -110,9 +111,20 @@ namespace EtwToPprof
         int processId = sample.Process.Id;
         foreach (var stackFrame in sample.Stack.Frames)
         {
-          if (stackFrame.HasValue && stackFrame.Symbol != null)
+          if (stackFrame.HasValue && stackFrame.Symbol != null && !string.IsNullOrEmpty(stackFrame.Symbol.FunctionName))
           {
             sampleProto.LocationId.Add(GetLocationId(stackFrame.Symbol, stackFrame.Address));
+          }
+          else if (stackFrame.HasValue && stackFrame.Image == null && options.jsResolver != null)
+          {
+            if (options.jsResolver.TryResolve(processId, unchecked((ulong)stackFrame.Address.Value), sample.Timestamp, out var jsSym))
+            {
+              sampleProto.LocationId.Add(GetJsLocationId(processId, stackFrame.Address, jsSym));
+            }
+            else
+            {
+              sampleProto.LocationId.Add(GetDynamicWasmLocationId(processId, stackFrame.Address));
+            }
           }
           else if (stackFrame.HasValue)
           {
@@ -343,13 +355,71 @@ namespace EtwToPprof
       return locationId;
     }
 
+    ulong GetJsLocationId(int processId, Address instructionAddress, JsMethodSymbol jsSym)
+    {
+      var startAddr = new Address(unchecked((long)jsSym.StartAddress));
+      string mod = jsSym.DisplayName.StartsWith("WebAssembly.", StringComparison.Ordinal) ? "WebAssembly" : "JavaScript";
+      var location = new Location(processId, jsSym.SourceUrl ?? mod, startAddr, jsSym.DisplayName);
+      if (!locations.TryGetValue(location, out ulong locationId))
+      {
+        locationId = nextLocationId++;
+        locations.Add(location, locationId);
+        var locationProto = new pb.Location();
+        locationProto.Id = locationId;
+        locationProto.Address = unchecked((ulong)instructionAddress.Value);
+        var line = new pb.Line();
+        line.FunctionId = GetFunctionId(mod, jsSym.DisplayName, jsSym.SourceUrl);
+        line.Line_ = jsSym.Line;
+        locationProto.Line.Add(line);
+        profile.Location.Add(locationProto);
+      }
+      return locationId;
+    }
+
+    ulong GetDynamicWasmLocationId(int processId, Address instructionAddress)
+    {
+      const string wasmLabel = "WebAssembly.WasmCode";
+      var zeroAddr = new Address(0);
+      var location = new Location(processId, "WebAssembly", zeroAddr, wasmLabel);
+      if (!locations.TryGetValue(location, out ulong locationId))
+      {
+        locationId = nextLocationId++;
+        locations.Add(location, locationId);
+        var locationProto = new pb.Location();
+        locationProto.Id = locationId;
+        locationProto.Address = unchecked((ulong)instructionAddress.Value);
+        var line = new pb.Line();
+        line.FunctionId = GetFunctionId("WebAssembly", wasmLabel, "WebAssembly");
+        locationProto.Line.Add(line);
+        profile.Location.Add(locationProto);
+      }
+      return locationId;
+    }
+
     ulong GetLocationId(IStackSymbol stackSymbol, Address instructionAddress)
     {
       var processId = stackSymbol.Image?.ProcessId ?? 0;
-      var imageName = stackSymbol.Image?.FileName;
-      var imagePath = stackSymbol.Image?.Path ?? "<unknown>";
+      var rawImgName = stackSymbol.Image?.FileName;
+      var rawImgPath = stackSymbol.Image?.Path;
+      var functionName = stackSymbol.FunctionName?.TrimEnd('\0');
+      bool isJsImage = PprofLabelFormatter.IsJScriptSymbol(rawImgName, rawImgPath, functionName);
+      bool isWasmSym = !isJsImage && PprofLabelFormatter.IsWasmSymbolName(functionName);
+      var symSourceUrl = !string.IsNullOrEmpty(stackSymbol.SourceFileName) ? stackSymbol.SourceFileName : (isJsImage ? rawImgPath : null);
+      if (isJsImage && !string.IsNullOrEmpty(functionName))
+      {
+        functionName = PprofLabelFormatter.FormatJsOrWasmFromJScript(
+            functionName, symSourceUrl, stackSymbol.SourceLineNumber);
+      }
+      else if (isWasmSym)
+      {
+        functionName = PprofLabelFormatter.FormatNativeWasm(functionName);
+      }
+      bool isDynamicVirtual = isJsImage || isWasmSym;
+      var imageName = isJsImage
+          ? (functionName != null && functionName.StartsWith("WebAssembly.", StringComparison.Ordinal) ? "WebAssembly" : "JavaScript")
+          : (isWasmSym ? "WebAssembly" : rawImgName);
+      var imagePath = string.IsNullOrEmpty(rawImgPath) ? imageName : rawImgPath;
       var functionAddress = stackSymbol.AddressRange.BaseAddress;
-      var functionName = stackSymbol.FunctionName;
 
       var location = new Location(processId, imagePath, functionAddress, functionName);
 
@@ -364,7 +434,7 @@ namespace EtwToPprof
         // Store the RVA (see comment in GetMappingId).
         ulong absAddr = unchecked((ulong)instructionAddress.Value);
         locationProto.Address = absAddr;
-        if (stackSymbol.Image != null)
+        if (stackSymbol.Image != null && !isDynamicVirtual)
         {
           ulong mid = GetMappingId(stackSymbol.Image);
           locationProto.MappingId = mid;
@@ -382,7 +452,7 @@ namespace EtwToPprof
           }
         }
         line = new pb.Line();
-        line.FunctionId = GetFunctionId(imageName, functionName, stackSymbol.SourceFileName);
+        line.FunctionId = GetFunctionId(imageName, functionName, symSourceUrl);
         line.Line_ = stackSymbol.SourceLineNumber;
         locationProto.Line.Add(line);
 
@@ -427,13 +497,13 @@ namespace EtwToPprof
         functionProto.Id = nextFunctionId++;
         functionProto.Name = GetStringId(functionName ?? function.ToString());
         functionProto.SystemName = GetStringId(function.ToString());
-        if (sourceFileName == null)
+        if (string.IsNullOrEmpty(sourceFileName))
         {
-          sourceFileName = imageName;
+          sourceFileName = imageName ?? "<unknown>";
         }
         else
         {
-          sourceFileName = sourceFileName.Replace('\\', '/');
+          sourceFileName = sourceFileName.TrimEnd('\0').Replace('\\', '/');
           sourceFileName = stripSourceFileNamePrefixRegex.Replace(sourceFileName, "");
         }
         functionProto.Filename = GetStringId(sourceFileName);

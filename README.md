@@ -17,8 +17,8 @@ Build with the .NET 10 SDK:
 
 ### Nuget dependencies (included in solution)
 - CommandLineParser v2.8.0
-- Google.Protobuf v3.11.4
-- Microsoft.Windows.EventTracing.Processing.All v1.0.0
+- Google.Protobuf v3.15.0
+- Microsoft.Windows.EventTracing.Processing.All v1.12.10
 
 ## Examples
 
@@ -72,6 +72,8 @@ List all loaded images with their Breakpad build IDs:
 
     --listImageIds                  (Default: false) List all unique image (module) names with Breakpad build IDs and exit.
 
+    --resolveJsSymbols              (Default: true) Resolve V8/JScript ETW MethodLoad symbols into JS.* and WebAssembly.* pprof frames.
+
     --help                          Display this help screen.
 
     --version                       Display version information.
@@ -84,6 +86,10 @@ Profiles include Mapping entries with Breakpad-format build IDs and RVA-based
 addresses. Unsymbolized frames are emitted as bare locations (address + mapping
 only) so that pprof symbolization servers can resolve them using symbol servers
 without requiring local PDBs.
+
+## JavaScript & WebAssembly Symbolization (V8 ETW)
+
+When an `.etl` trace includes events from V8's `Microsoft-JScript` ETW provider (`57277741-3638-4A4B-BDBA-0AC6E45DA56C`), `EtwToPprof` automatically resolves dynamically JIT-compiled JavaScript (`JS.*`) and WebAssembly (`WebAssembly.*`) frames—even when `--loadSymbols false` is used. Disable via `--resolveJsSymbols false` if raw unmapped JIT addresses are preferred.
 
 ## Disclaimer:
 
