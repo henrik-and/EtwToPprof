@@ -82,13 +82,17 @@ namespace EtwToPprof
 
     public void AddSample(ICpuSample sample)
     {
-      if ((sample.IsExecutingDeferredProcedureCall ?? false) ||
-          (sample.IsExecutingInterruptServicingRoutine ?? false))
-        return;
-
       var timestamp = sample.Timestamp.RelativeTimestamp.TotalSeconds;
       if (timestamp < options.timeStart || timestamp > options.timeEnd)
         return;
+
+      if ((sample.IsExecutingDeferredProcedureCall ?? false) ||
+          (sample.IsExecutingInterruptServicingRoutine ?? false))
+      {
+        // Not exported (as before), but tracked so callers can judge machine noise.
+        interruptCpuTime += sample.Weight.TotalMilliseconds;
+        return;
+      }
 
       if (options.processFilterSet?.Count > 0)
       {
@@ -98,7 +102,17 @@ namespace EtwToPprof
         string imagePath = processImage?.Path ?? sample.Process.ImageName;
 
         if (!options.processFilterSet.Any(filter => imagePath.Contains(filter.Replace("/", "\\"))))
+        {
+          // Track CPU of processes outside the filter (excluding the Idle process, PID 0)
+          // so the profile records how busy the rest of the machine was in the same window.
+          if ((sample.Process?.Id ?? 0) != 0)
+          {
+            string bgName = sample.Process?.ImageName ?? "Unknown";
+            backgroundCpuTimes.TryGetValue(bgName, out decimal bgMs);
+            backgroundCpuTimes[bgName] = bgMs + sample.Weight.TotalMilliseconds;
+          }
           return;
+        }
       }
 
       wallTimeStart = Math.Min(wallTimeStart, timestamp);
@@ -259,6 +273,27 @@ namespace EtwToPprof
       else
       {
         profile.Comment.Add(GetStringId("No samples exported"));
+      }
+      if (options.processFilterSet?.Count > 0)
+      {
+        // Background CPU outside the process filter in the same time window, as average
+        // cores. Window = --timeStart..--timeEnd when both are set, else the exported wall time.
+        decimal windowMs = options.timeEnd != decimal.MaxValue
+            ? (options.timeEnd - options.timeStart) * 1000
+            : (wallTimeStart < wallTimeEnd ? (wallTimeEnd - wallTimeStart) * 1000 : 0);
+        if (windowMs > 0)
+        {
+          decimal bgTotalMs = backgroundCpuTimes.Values.Sum();
+          profile.Comment.Add(GetStringId(
+              $"Background CPU outside process filter: {bgTotalMs:F} ms ({bgTotalMs / windowMs:F2} cores avg over {windowMs:F0} ms)"));
+          foreach (var kv in backgroundCpuTimes.OrderByDescending(kv => kv.Value).Take(8))
+          {
+            profile.Comment.Add(GetStringId(
+                $"Background CPU process: {kv.Key} {kv.Value:F} ms ({kv.Value / windowMs:F2} cores)"));
+          }
+          profile.Comment.Add(GetStringId(
+              $"Interrupt/DPC CPU (all processes): {interruptCpuTime:F} ms ({interruptCpuTime / windowMs:F2} cores avg)"));
+        }
       }
       // Set Has* flags on mappings: only claim symbolization for mappings
       // where all locations were successfully resolved.
@@ -540,6 +575,8 @@ namespace EtwToPprof
 
     Dictionary<Location, ulong> locations;
     Dictionary<ulong, ulong> unsymbolizedLocations;
+    Dictionary<string, decimal> backgroundCpuTimes = new Dictionary<string, decimal>();
+    decimal interruptCpuTime;
     ulong nextLocationId;
 
     Dictionary<Function, ulong> functions;
